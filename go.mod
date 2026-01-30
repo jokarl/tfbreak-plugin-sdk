@@ -1,6 +1,6 @@
 module github.com/jokarl/tfbreak-plugin-sdk
 
-go 1.23.0
+go 1.23.10
 
 require (
 	github.com/google/go-cmp v0.6.0
