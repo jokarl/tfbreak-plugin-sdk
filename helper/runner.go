@@ -72,11 +72,15 @@ func TestRunner(t *testing.T, oldFiles, newFiles map[string]string) *Runner {
 		Issues:   make(Issues, 0),
 	}
 
-	parser := hclparse.NewParser()
+	// Use separate parsers for old and new files because hclparse.Parser
+	// caches files by filename. Using a single parser would cause the
+	// second parse of "main.tf" to return the cached first parse.
+	oldParser := hclparse.NewParser()
+	newParser := hclparse.NewParser()
 
 	// Parse old files
 	for name, content := range oldFiles {
-		file, diags := parser.ParseHCL([]byte(content), name)
+		file, diags := oldParser.ParseHCL([]byte(content), name)
 		if diags.HasErrors() {
 			t.Fatalf("failed to parse old file %s: %s", name, diags.Error())
 		}
@@ -85,7 +89,7 @@ func TestRunner(t *testing.T, oldFiles, newFiles map[string]string) *Runner {
 
 	// Parse new files
 	for name, content := range newFiles {
-		file, diags := parser.ParseHCL([]byte(content), name)
+		file, diags := newParser.ParseHCL([]byte(content), name)
 		if diags.HasErrors() {
 			t.Fatalf("failed to parse new file %s: %s", name, diags.Error())
 		}
