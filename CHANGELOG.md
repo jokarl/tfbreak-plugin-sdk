@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/jokarl/tfbreak-plugin-sdk/compare/v0.2.0...v0.2.1) (2026-01-30)
+
+
+### Bug Fixes
+
+* update Go to 1.23.12 to fix GO-2025-3956 ([e81ce04](https://github.com/jokarl/tfbreak-plugin-sdk/commit/e81ce046bf257fc026899af5f24cefacf83fef81))
+
 ## [0.2.0](https://github.com/jokarl/tfbreak-plugin-sdk/compare/v0.1.0...v0.2.0) (2026-01-30)
 
 
