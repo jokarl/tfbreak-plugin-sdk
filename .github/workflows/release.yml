@@ -5,6 +5,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g., v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,24 +20,25 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
-      sha: ${{ steps.release.outputs.sha }}
+      tag_name: ${{ steps.release.outputs.tag_name || inputs.tag }}
+      version: ${{ steps.release.outputs.version || inputs.tag }}
+      sha: ${{ steps.release.outputs.sha || github.sha }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
+        if: ${{ !inputs.tag }}
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   publish-release:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    if: ${{ needs.release-please.outputs.release_created || inputs.tag }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code at release commit
+      - name: Checkout code at release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release-please.outputs.sha }}
+          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
