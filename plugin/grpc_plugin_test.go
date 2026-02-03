@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/hcl/v2"
@@ -68,6 +70,55 @@ func TestRunnerBrokerID(t *testing.T) {
 	if RunnerBrokerID == 0 {
 		t.Error("RunnerBrokerID should not be 0")
 	}
+}
+
+func TestCombineErrors(t *testing.T) {
+	t.Run("nil for empty slice", func(t *testing.T) {
+		result := combineErrors(nil)
+		if result != nil {
+			t.Errorf("expected nil, got %v", result)
+		}
+
+		result = combineErrors([]error{})
+		if result != nil {
+			t.Errorf("expected nil for empty slice, got %v", result)
+		}
+	})
+
+	t.Run("single error returned as-is", func(t *testing.T) {
+		err := fmt.Errorf("single error")
+		result := combineErrors([]error{err})
+		if result != err {
+			t.Errorf("expected same error instance, got %v", result)
+		}
+	})
+
+	t.Run("multiple errors combined", func(t *testing.T) {
+		errs := []error{
+			fmt.Errorf("error 1"),
+			fmt.Errorf("error 2"),
+			fmt.Errorf("error 3"),
+		}
+		result := combineErrors(errs)
+
+		if result == nil {
+			t.Fatal("expected combined error, got nil")
+		}
+
+		errMsg := result.Error()
+		if !strings.Contains(errMsg, "3 rules failed") {
+			t.Errorf("expected '3 rules failed' in message, got %q", errMsg)
+		}
+		if !strings.Contains(errMsg, "error 1") {
+			t.Errorf("expected 'error 1' in message, got %q", errMsg)
+		}
+		if !strings.Contains(errMsg, "error 2") {
+			t.Errorf("expected 'error 2' in message, got %q", errMsg)
+		}
+		if !strings.Contains(errMsg, "error 3") {
+			t.Errorf("expected 'error 3' in message, got %q", errMsg)
+		}
+	})
 }
 
 // mockRunner is a minimal tflint.Runner implementation for testing.

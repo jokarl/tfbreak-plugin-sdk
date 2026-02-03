@@ -386,3 +386,206 @@ func TestGetModuleContentOptionConversion(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Edge case tests
+// =============================================================================
+
+func TestToProtoAttribute_NilAttribute(t *testing.T) {
+	result := toProtoAttribute(nil)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestFromProtoAttribute_NilAttribute(t *testing.T) {
+	result := fromProtoAttribute(nil)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestToProtoBlock_NilBlock(t *testing.T) {
+	result := toProtoBlock(nil)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestFromProtoBlock_NilBlock(t *testing.T) {
+	result := fromProtoBlock(nil)
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestFromProtoRange_NilRange(t *testing.T) {
+	result := fromProtoRange(nil)
+	// Should return empty range, not panic
+	if result.Filename != "" {
+		t.Errorf("expected empty filename, got %q", result.Filename)
+	}
+}
+
+func TestFromProtoPosition_NilPosition(t *testing.T) {
+	result := fromProtoPosition(nil)
+	// Should return empty position, not panic
+	if result.Line != 0 || result.Column != 0 || result.Byte != 0 {
+		t.Errorf("expected zero position, got Line=%d Column=%d Byte=%d", result.Line, result.Column, result.Byte)
+	}
+}
+
+func TestSeverityConversion_UnknownSeverity(t *testing.T) {
+	// Test unknown severity converts to default
+	result := fromProtoSeverity(pb.Severity_SEVERITY_UNSPECIFIED)
+	if result != tflint.ERROR {
+		t.Errorf("SEVERITY_UNSPECIFIED should convert to ERROR, got %v", result)
+	}
+}
+
+func TestToProtoConfig_EmptyRules(t *testing.T) {
+	config := &tflint.Config{
+		Rules: map[string]*tflint.RuleConfig{},
+	}
+	result := toProtoConfig(config)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Rules) != 0 {
+		t.Errorf("expected empty rules, got %d", len(result.Rules))
+	}
+}
+
+func TestFromProtoConfig_EmptyRules(t *testing.T) {
+	config := &pb.Config{
+		Rules: map[string]*pb.RuleConfig{},
+	}
+	result := fromProtoConfig(config)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Rules) != 0 {
+		t.Errorf("expected empty rules, got %d", len(result.Rules))
+	}
+}
+
+func TestBodySchemaConversion_Roundtrip(t *testing.T) {
+	// Test a complete schema roundtrip
+	original := &hclext.BodySchema{
+		Mode: hclext.SchemaJustAttributesMode,
+		Attributes: []hclext.AttributeSchema{
+			{Name: "attr1", Required: true},
+			{Name: "attr2", Required: false},
+		},
+		Blocks: []hclext.BlockSchema{
+			{
+				Type:       "nested",
+				LabelNames: []string{"label1"},
+				Body: &hclext.BodySchema{
+					Attributes: []hclext.AttributeSchema{
+						{Name: "nested_attr", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	proto := toProtoBodySchema(original)
+	result := fromProtoBodySchema(proto)
+
+	if result.Mode != original.Mode {
+		t.Errorf("Mode mismatch: got %v, want %v", result.Mode, original.Mode)
+	}
+	if len(result.Attributes) != len(original.Attributes) {
+		t.Errorf("Attributes length mismatch: got %d, want %d", len(result.Attributes), len(original.Attributes))
+	}
+	if len(result.Blocks) != len(original.Blocks) {
+		t.Errorf("Blocks length mismatch: got %d, want %d", len(result.Blocks), len(original.Blocks))
+	}
+	if result.Blocks[0].Body == nil {
+		t.Error("Nested body should not be nil after roundtrip")
+	}
+}
+
+func TestBodyContentConversion_WithNestedBlocks(t *testing.T) {
+	// Test conversion with deeply nested content
+	original := &hclext.BodyContent{
+		Attributes: map[string]*hclext.Attribute{
+			"top_attr": {
+				Name: "top_attr",
+				Range: hcl.Range{
+					Filename: "test.tf",
+					Start:    hcl.Pos{Line: 1, Column: 1},
+					End:      hcl.Pos{Line: 1, Column: 10},
+				},
+			},
+		},
+		Blocks: []*hclext.Block{
+			{
+				Type:   "outer",
+				Labels: []string{"label1"},
+				Body: &hclext.BodyContent{
+					Attributes: map[string]*hclext.Attribute{
+						"inner_attr": {
+							Name: "inner_attr",
+						},
+					},
+					Blocks: []*hclext.Block{
+						{
+							Type:   "innermost",
+							Labels: []string{},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	proto := toProtoBodyContent(original)
+	result := fromProtoBodyContent(proto)
+
+	if len(result.Blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(result.Blocks))
+	}
+
+	outerBlock := result.Blocks[0]
+	if outerBlock.Body == nil {
+		t.Fatal("outer block body should not be nil")
+	}
+
+	if len(outerBlock.Body.Blocks) != 1 {
+		t.Fatalf("expected 1 inner block, got %d", len(outerBlock.Body.Blocks))
+	}
+
+	if outerBlock.Body.Blocks[0].Type != "innermost" {
+		t.Errorf("innermost block type = %q, want %q", outerBlock.Body.Blocks[0].Type, "innermost")
+	}
+}
+
+func TestBlockConversion_WithLabelRanges(t *testing.T) {
+	original := &hclext.Block{
+		Type:   "resource",
+		Labels: []string{"aws_instance", "example"},
+		LabelRanges: []hcl.Range{
+			{Filename: "main.tf", Start: hcl.Pos{Line: 1, Column: 10}, End: hcl.Pos{Line: 1, Column: 22}},
+			{Filename: "main.tf", Start: hcl.Pos{Line: 1, Column: 24}, End: hcl.Pos{Line: 1, Column: 31}},
+		},
+		DefRange:  hcl.Range{Filename: "main.tf", Start: hcl.Pos{Line: 1, Column: 1}, End: hcl.Pos{Line: 1, Column: 40}},
+		TypeRange: hcl.Range{Filename: "main.tf", Start: hcl.Pos{Line: 1, Column: 1}, End: hcl.Pos{Line: 1, Column: 9}},
+	}
+
+	proto := toProtoBlock(original)
+	result := fromProtoBlock(proto)
+
+	if len(result.LabelRanges) != 2 {
+		t.Errorf("LabelRanges length = %d, want 2", len(result.LabelRanges))
+	}
+
+	if result.DefRange.Filename != "main.tf" {
+		t.Errorf("DefRange.Filename = %q, want %q", result.DefRange.Filename, "main.tf")
+	}
+
+	if result.TypeRange.Start.Column != 1 {
+		t.Errorf("TypeRange.Start.Column = %d, want 1", result.TypeRange.Start.Column)
+	}
+}

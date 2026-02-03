@@ -7,6 +7,7 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -123,6 +124,7 @@ func (s *GRPCRuleSetServer) ApplyConfig(ctx context.Context, req *pb.ApplyConfig
 }
 
 // Check executes all enabled rules.
+// All rules are executed even if some fail - errors are collected and returned together.
 func (s *GRPCRuleSetServer) Check(ctx context.Context, req *pb.Check_Request) (*pb.Check_Response, error) {
 	// The broker provides a unique ID for this call.
 	// The host starts a Runner server and tells us the ID.
@@ -149,15 +151,48 @@ func (s *GRPCRuleSetServer) Check(ctx context.Context, req *pb.Check_Request) (*
 		return nil, err
 	}
 
-	// Execute all enabled rules
+	// Execute all enabled rules, collecting errors rather than failing fast.
+	// This ensures all rules run even if some fail, giving users a complete picture.
 	builtin := s.impl.BuiltinImpl()
+	var ruleErrors []error
 	for _, rule := range builtin.EnabledRules() {
+		// Check for context cancellation between rules
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
 		if err := rule.Check(wrappedRunner); err != nil {
-			return nil, err
+			ruleErrors = append(ruleErrors, fmt.Errorf("rule %s: %w", rule.Name(), err))
 		}
 	}
 
+	// If any rules failed, combine errors into a single error
+	if len(ruleErrors) > 0 {
+		return nil, combineErrors(ruleErrors)
+	}
+
 	return &pb.Check_Response{}, nil
+}
+
+// combineErrors combines multiple errors into a single error.
+func combineErrors(errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	if len(errs) == 1 {
+		return errs[0]
+	}
+
+	var msg string
+	for i, err := range errs {
+		if i > 0 {
+			msg += "; "
+		}
+		msg += err.Error()
+	}
+	return fmt.Errorf("%d rules failed: %s", len(errs), msg)
 }
 
 // RunnerBrokerID is the broker ID used for the Runner callback service.
@@ -284,12 +319,18 @@ func (c *GRPCRuleSetClient) Check(runner tflint.Runner) error {
 	var serverReady sync.WaitGroup
 	serverReady.Add(1)
 
+	// Track the gRPC server for cleanup
+	var grpcServer *grpc.Server
+	var serverMu sync.Mutex
+
 	// Use the broker to start a server the plugin can connect to
 	serverFunc := func(opts []grpc.ServerOption) *grpc.Server {
-		s := grpc.NewServer(opts...)
-		pb.RegisterRunnerServer(s, runnerServer)
+		serverMu.Lock()
+		grpcServer = grpc.NewServer(opts...)
+		serverMu.Unlock()
+		pb.RegisterRunnerServer(grpcServer, runnerServer)
 		serverReady.Done()
-		return s
+		return grpcServer
 	}
 
 	// Start the server in a goroutine since AcceptAndServe blocks
@@ -308,6 +349,16 @@ func (c *GRPCRuleSetClient) Check(runner tflint.Runner) error {
 	case <-time.After(5 * time.Second):
 		// Server startup timeout - proceed anyway, plugin may still connect
 	}
+
+	// Ensure cleanup of the gRPC server when done
+	defer func() {
+		serverMu.Lock()
+		if grpcServer != nil {
+			// Use GracefulStop to allow pending RPCs to complete
+			grpcServer.GracefulStop()
+		}
+		serverMu.Unlock()
+	}()
 
 	// Call the plugin's Check method with a timeout
 	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
