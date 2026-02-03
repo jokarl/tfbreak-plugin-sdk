@@ -193,12 +193,13 @@ for _, block := range content.Blocks {
 
 ## Attribute
 
-An extracted HCL attribute with its expression and source range.
+An extracted HCL attribute with its expression, value, and source range.
 
 ```go
 type Attribute struct {
     Name      string          // Attribute name
-    Expr      hcl.Expression  // Value expression
+    Expr      hcl.Expression  // Value expression (nil when received over gRPC)
+    Value     cty.Value       // Pre-evaluated value (populated in gRPC scenarios)
     Range     hcl.Range       // Source range of entire attribute
     NameRange hcl.Range       // Source range of attribute name
 }
@@ -206,13 +207,25 @@ type Attribute struct {
 
 ### Getting Attribute Values
 
+There are two ways to get attribute values depending on the context:
+
+1. **Direct execution** (same process): Use `attr.Expr.Value(nil)`
+2. **gRPC execution** (plugin): Use `attr.Value` (pre-evaluated)
+
 ```go
 attr := content.Attributes["location"]
 
-// Evaluate the expression to get the value
-val, diags := attr.Expr.Value(nil)
-if diags.HasErrors() {
-    // Expression could not be evaluated (e.g., contains variables)
+// Recommended: Check Value first (works for both gRPC and direct execution)
+var val cty.Value
+if attr.Value != cty.NilVal && !attr.Value.IsNull() {
+    // Value was pre-evaluated (gRPC scenario)
+    val = attr.Value
+} else if attr.Expr != nil {
+    // Direct execution - evaluate the expression
+    val, diags := attr.Expr.Value(nil)
+    if diags.HasErrors() {
+        // Expression could not be evaluated (e.g., contains variables)
+    }
 }
 
 // Check type and get value
@@ -222,6 +235,30 @@ if val.Type() == cty.String {
 
 // Use Range for issue reporting
 runner.EmitIssue(rule, "message", attr.Range)
+```
+
+### Note on gRPC Serialization
+
+When attributes are transmitted over gRPC (between tfbreak-core and plugins), the `Expr` field cannot be serialized. Instead, the expression is evaluated and stored in the `Value` field. Your rule code should handle both scenarios:
+
+```go
+func evalAttr(attr *hclext.Attribute) cty.Value {
+    if attr == nil {
+        return cty.NilVal
+    }
+    // Check pre-evaluated Value first (gRPC)
+    if attr.Value != cty.NilVal && !attr.Value.IsNull() {
+        return attr.Value
+    }
+    // Fall back to expression evaluation (direct)
+    if attr.Expr != nil {
+        val, diags := attr.Expr.Value(nil)
+        if !diags.HasErrors() {
+            return val
+        }
+    }
+    return cty.NilVal
+}
 ```
 
 ### Handling Different Value Types
@@ -434,8 +471,9 @@ func compareStringAttr(runner tflint.Runner, rule tflint.Rule, attrName string, 
         return nil
     }
 
-    oldVal, _ := oldAttr.Expr.Value(nil)
-    newVal, _ := newAttr.Expr.Value(nil)
+    // Get values (works for both gRPC and direct execution)
+    oldVal := getAttrValue(oldAttr)
+    newVal := getAttrValue(newAttr)
 
     if oldVal.Type() == cty.String && newVal.Type() == cty.String {
         if oldVal.AsString() != newVal.AsString() {
@@ -449,5 +487,25 @@ func compareStringAttr(runner tflint.Runner, rule tflint.Rule, attrName string, 
     }
 
     return nil
+}
+
+// getAttrValue retrieves the value from an attribute, supporting both
+// gRPC (pre-evaluated Value) and direct execution (Expr evaluation).
+func getAttrValue(attr *hclext.Attribute) cty.Value {
+    if attr == nil {
+        return cty.NilVal
+    }
+    // Check pre-evaluated Value first (gRPC scenario)
+    if attr.Value != cty.NilVal && !attr.Value.IsNull() {
+        return attr.Value
+    }
+    // Fall back to expression evaluation (direct execution)
+    if attr.Expr != nil {
+        val, diags := attr.Expr.Value(nil)
+        if !diags.HasErrors() {
+            return val
+        }
+    }
+    return cty.NilVal
 }
 ```
