@@ -7,6 +7,7 @@ package plugin
 
 import (
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 
 	"github.com/jokarl/tfbreak-plugin-sdk/hclext"
@@ -188,16 +189,26 @@ func toProtoAttribute(attr *hclext.Attribute) *pb.Attribute {
 		NameRange: toProtoRange(attr.NameRange),
 	}
 
-	// Serialize expression value if available
-	if attr.Expr != nil {
-		// Try to evaluate the expression and serialize the value
-		val, diags := attr.Expr.Value(nil)
-		if !diags.HasErrors() && val.IsKnown() && !val.IsNull() {
-			// Serialize the cty value as JSON
-			jsonBytes, err := ctyjson.Marshal(val, val.Type())
-			if err == nil {
-				protoAttr.ExprValue = jsonBytes
-			}
+	// Serialize value - prefer pre-evaluated Value, fall back to Expr evaluation.
+	// This handles both fresh attributes (with Expr) and roundtrip attributes (with Value).
+	var val cty.Value
+
+	// First check if we have a pre-evaluated Value (for roundtrip scenarios)
+	if attr.Value != cty.NilVal && !attr.Value.IsNull() && attr.Value.IsKnown() {
+		val = attr.Value
+	} else if attr.Expr != nil {
+		// Try to evaluate the expression
+		evaluated, diags := attr.Expr.Value(nil)
+		if !diags.HasErrors() && evaluated.IsKnown() && !evaluated.IsNull() {
+			val = evaluated
+		}
+	}
+
+	// Serialize if we got a valid value
+	if val != cty.NilVal && !val.IsNull() && val.IsKnown() {
+		jsonBytes, err := ctyjson.Marshal(val, val.Type())
+		if err == nil {
+			protoAttr.ExprValue = jsonBytes
 		}
 	}
 

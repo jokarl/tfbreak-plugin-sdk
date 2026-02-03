@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/jokarl/tfbreak-plugin-sdk/hclext"
 	pb "github.com/jokarl/tfbreak-plugin-sdk/plugin/proto"
@@ -588,4 +589,111 @@ func TestBlockConversion_WithLabelRanges(t *testing.T) {
 	if result.TypeRange.Start.Column != 1 {
 		t.Errorf("TypeRange.Start.Column = %d, want 1", result.TypeRange.Start.Column)
 	}
+}
+
+// =============================================================================
+// Value serialization tests
+// =============================================================================
+
+func TestAttributeConversion_WithValue(t *testing.T) {
+	// Test that an attribute with a pre-evaluated Value (no Expr) roundtrips correctly.
+	// This is important for gRPC communication where Expr can't be serialized.
+	//
+	// Note: cty JSON serialization uses SimpleJSONValue which converts:
+	// - Lists to Tuples
+	// - Maps to Objects
+	// This is expected behavior and values are still semantically equivalent for comparisons.
+	tests := []struct {
+		name     string
+		value    cty.Value
+		expected cty.Value // expected after roundtrip (may differ due to JSON type conversion)
+	}{
+		{"string value", cty.StringVal("hello"), cty.StringVal("hello")},
+		{"number value", cty.NumberIntVal(42), cty.NumberIntVal(42)},
+		{"bool value", cty.BoolVal(true), cty.BoolVal(true)},
+		// Lists become Tuples after JSON roundtrip
+		{
+			"list value",
+			cty.ListVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")}),
+			cty.TupleVal([]cty.Value{cty.StringVal("a"), cty.StringVal("b")}),
+		},
+		// Maps become Objects after JSON roundtrip
+		{
+			"map value",
+			cty.MapVal(map[string]cty.Value{"key": cty.StringVal("val")}),
+			cty.ObjectVal(map[string]cty.Value{"key": cty.StringVal("val")}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := &hclext.Attribute{
+				Name:  "test_attr",
+				Value: tt.value,
+				Range: hcl.Range{
+					Filename: "test.tf",
+					Start:    hcl.Pos{Line: 1, Column: 1},
+					End:      hcl.Pos{Line: 1, Column: 10},
+				},
+			}
+
+			proto := toProtoAttribute(original)
+			if proto == nil {
+				t.Fatal("proto should not be nil")
+			}
+			if len(proto.ExprValue) == 0 {
+				t.Fatal("ExprValue should be populated from Value")
+			}
+
+			result := fromProtoAttribute(proto)
+			if result == nil {
+				t.Fatal("result should not be nil")
+			}
+
+			if result.Value == cty.NilVal {
+				t.Fatal("result.Value should not be NilVal")
+			}
+
+			if !result.Value.RawEquals(tt.expected) {
+				t.Errorf("Value mismatch: got %#v, want %#v", result.Value, tt.expected)
+			}
+		})
+	}
+}
+
+func TestAttributeConversion_NilAndUnknownValues(t *testing.T) {
+	t.Run("nil value", func(t *testing.T) {
+		attr := &hclext.Attribute{
+			Name: "test",
+			// Value is cty.NilVal (zero value)
+		}
+		proto := toProtoAttribute(attr)
+		if len(proto.ExprValue) != 0 {
+			t.Error("ExprValue should be empty for NilVal")
+		}
+	})
+
+	t.Run("null value", func(t *testing.T) {
+		attr := &hclext.Attribute{
+			Name:  "test",
+			Value: cty.NullVal(cty.String),
+		}
+		proto := toProtoAttribute(attr)
+		// Null values are not serialized (per the implementation)
+		if len(proto.ExprValue) != 0 {
+			t.Error("ExprValue should be empty for null value")
+		}
+	})
+
+	t.Run("unknown value", func(t *testing.T) {
+		attr := &hclext.Attribute{
+			Name:  "test",
+			Value: cty.UnknownVal(cty.String),
+		}
+		proto := toProtoAttribute(attr)
+		// Unknown values are not serialized
+		if len(proto.ExprValue) != 0 {
+			t.Error("ExprValue should be empty for unknown value")
+		}
+	})
 }
