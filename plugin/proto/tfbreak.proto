@@ -1,0 +1,328 @@
+// Protocol Buffer definitions for tfbreak plugin communication.
+//
+// This defines the gRPC services used for communication between tfbreak-core
+// (the host) and plugins. The design follows hashicorp/go-plugin patterns.
+//
+// DEVIATION FROM TFLINT (see ADR-0002):
+// Unlike tflint which has single GetModuleContent/GetResourceContent methods,
+// tfbreak has dual methods (GetOld*/GetNew*) because it compares two
+// configurations to detect breaking changes.
+
+syntax = "proto3";
+
+package tfbreak;
+
+option go_package = "github.com/jokarl/tfbreak-plugin-sdk/plugin/proto";
+
+// =============================================================================
+// RuleSet Service - Called by host to interact with the plugin
+// =============================================================================
+
+// RuleSet is the main plugin service. The host calls these methods to:
+// - Query plugin metadata (name, version, rules)
+// - Configure the plugin
+// - Execute rules via Check
+service RuleSet {
+  // GetRuleSetName returns the name of the ruleset (e.g., "azurerm").
+  rpc GetRuleSetName(GetRuleSetName.Request) returns (GetRuleSetName.Response);
+
+  // GetRuleSetVersion returns the version of the ruleset (e.g., "0.1.0").
+  rpc GetRuleSetVersion(GetRuleSetVersion.Request) returns (GetRuleSetVersion.Response);
+
+  // GetRuleNames returns the names of all rules in this ruleset.
+  rpc GetRuleNames(GetRuleNames.Request) returns (GetRuleNames.Response);
+
+  // GetVersionConstraint returns the tfbreak version constraint.
+  rpc GetVersionConstraint(GetVersionConstraint.Request) returns (GetVersionConstraint.Response);
+
+  // GetConfigSchema returns the schema for plugin-specific configuration.
+  rpc GetConfigSchema(GetConfigSchema.Request) returns (GetConfigSchema.Response);
+
+  // ApplyGlobalConfig applies global tfbreak configuration.
+  rpc ApplyGlobalConfig(ApplyGlobalConfig.Request) returns (ApplyGlobalConfig.Response);
+
+  // ApplyConfig applies plugin-specific configuration.
+  rpc ApplyConfig(ApplyConfig.Request) returns (ApplyConfig.Response);
+
+  // Check executes all enabled rules.
+  rpc Check(Check.Request) returns (Check.Response);
+}
+
+// =============================================================================
+// Runner Service - Callback from plugin to host
+// =============================================================================
+
+// Runner is the callback service that plugins use to:
+// - Access old and new Terraform configurations
+// - Emit issues when breaking changes are detected
+// - Decode rule-specific configuration
+//
+// DEVIATION FROM TFLINT (see ADR-0002):
+// Runner provides GetOld* and GetNew* method pairs instead of single methods.
+service Runner {
+  // GetOldModuleContent retrieves module content from the OLD (baseline) configuration.
+  rpc GetOldModuleContent(GetModuleContent.Request) returns (GetModuleContent.Response);
+
+  // GetNewModuleContent retrieves module content from the NEW configuration.
+  rpc GetNewModuleContent(GetModuleContent.Request) returns (GetModuleContent.Response);
+
+  // GetOldResourceContent retrieves resources from the OLD configuration.
+  rpc GetOldResourceContent(GetResourceContent.Request) returns (GetResourceContent.Response);
+
+  // GetNewResourceContent retrieves resources from the NEW configuration.
+  rpc GetNewResourceContent(GetResourceContent.Request) returns (GetResourceContent.Response);
+
+  // EmitIssue reports a finding from the rule.
+  rpc EmitIssue(EmitIssue.Request) returns (EmitIssue.Response);
+
+  // DecodeRuleConfig retrieves and decodes rule configuration.
+  rpc DecodeRuleConfig(DecodeRuleConfig.Request) returns (DecodeRuleConfig.Response);
+}
+
+// =============================================================================
+// Message Types - RuleSet Service
+// =============================================================================
+
+message GetRuleSetName {
+  message Request {}
+  message Response {
+    string name = 1;
+  }
+}
+
+message GetRuleSetVersion {
+  message Request {}
+  message Response {
+    string version = 1;
+  }
+}
+
+message GetRuleNames {
+  message Request {}
+  message Response {
+    repeated string names = 1;
+  }
+}
+
+message GetVersionConstraint {
+  message Request {}
+  message Response {
+    string constraint = 1;
+  }
+}
+
+message GetConfigSchema {
+  message Request {}
+  message Response {
+    BodySchema schema = 1;
+  }
+}
+
+message ApplyGlobalConfig {
+  message Request {
+    Config config = 1;
+  }
+  message Response {}
+}
+
+message ApplyConfig {
+  message Request {
+    BodyContent content = 1;
+  }
+  message Response {}
+}
+
+message Check {
+  message Request {
+    // runner_addr is used for bidirectional communication.
+    // The plugin starts a Runner client to call back to the host.
+    // This is handled internally by go-plugin's multiplexing.
+  }
+  message Response {}
+}
+
+// =============================================================================
+// Message Types - Runner Service
+// =============================================================================
+
+message GetModuleContent {
+  message Request {
+    BodySchema schema = 1;
+    GetModuleContentOption option = 2;
+  }
+  message Response {
+    BodyContent content = 1;
+  }
+}
+
+message GetResourceContent {
+  message Request {
+    string resource_type = 1;
+    BodySchema schema = 2;
+    GetModuleContentOption option = 3;
+  }
+  message Response {
+    BodyContent content = 1;
+  }
+}
+
+message EmitIssue {
+  message Request {
+    Rule rule = 1;
+    string message = 2;
+    Range range = 3;
+  }
+  message Response {}
+}
+
+message DecodeRuleConfig {
+  message Request {
+    string rule_name = 1;
+  }
+  message Response {
+    // config_bytes contains JSON-encoded rule configuration.
+    // Returns empty bytes if no configuration is provided.
+    bytes config_bytes = 1;
+    bool has_config = 2;
+  }
+}
+
+// =============================================================================
+// Common Types
+// =============================================================================
+
+// Config represents global tfbreak configuration.
+message Config {
+  map<string, RuleConfig> rules = 1;
+  bool disabled_by_default = 2;
+  repeated string only = 3;
+  string plugin_dir = 4;
+}
+
+// RuleConfig represents configuration for a single rule.
+message RuleConfig {
+  string name = 1;
+  bool enabled = 2;
+  // body_bytes contains JSON-encoded HCL body for rule-specific configuration.
+  bytes body_bytes = 3;
+}
+
+// Rule represents a rule's metadata.
+message Rule {
+  string name = 1;
+  bool enabled = 2;
+  Severity severity = 3;
+  string link = 4;
+}
+
+// Severity represents issue severity levels.
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_ERROR = 1;
+  SEVERITY_WARNING = 2;
+  SEVERITY_NOTICE = 3;
+}
+
+// =============================================================================
+// Schema Types
+// =============================================================================
+
+// BodySchema represents the expected structure of an HCL body.
+message BodySchema {
+  repeated AttributeSchema attributes = 1;
+  repeated BlockSchema blocks = 2;
+  SchemaMode mode = 3;
+}
+
+// AttributeSchema represents an expected HCL attribute.
+message AttributeSchema {
+  string name = 1;
+  bool required = 2;
+}
+
+// BlockSchema represents an expected HCL block.
+message BlockSchema {
+  string type = 1;
+  repeated string label_names = 2;
+  BodySchema body = 3;
+}
+
+// SchemaMode specifies how schema matching behaves.
+enum SchemaMode {
+  SCHEMA_MODE_DEFAULT = 0;
+  SCHEMA_MODE_JUST_ATTRIBUTES = 1;
+}
+
+// =============================================================================
+// Content Types
+// =============================================================================
+
+// BodyContent represents extracted content from an HCL body.
+message BodyContent {
+  map<string, Attribute> attributes = 1;
+  repeated Block blocks = 2;
+}
+
+// Attribute represents an extracted HCL attribute.
+message Attribute {
+  string name = 1;
+  // expr_bytes contains the expression as a serializable format.
+  // We use bytes because hcl.Expression is not directly serializable.
+  bytes expr_bytes = 2;
+  Range range = 3;
+  Range name_range = 4;
+  // expr_value contains the evaluated value as JSON when available.
+  bytes expr_value = 5;
+}
+
+// Block represents an extracted HCL block.
+message Block {
+  string type = 1;
+  repeated string labels = 2;
+  BodyContent body = 3;
+  Range def_range = 4;
+  Range type_range = 5;
+  repeated Range label_ranges = 6;
+}
+
+// =============================================================================
+// Location Types
+// =============================================================================
+
+// Range represents a source code range.
+message Range {
+  string filename = 1;
+  Position start = 2;
+  Position end = 3;
+}
+
+// Position represents a position in source code.
+message Position {
+  int64 line = 1;
+  int64 column = 2;
+  int64 byte = 3;
+}
+
+// =============================================================================
+// Options
+// =============================================================================
+
+// GetModuleContentOption configures how content is retrieved.
+message GetModuleContentOption {
+  ModuleCtxType module_ctx = 1;
+  ExpandMode expand_mode = 2;
+  string resource_type_hint = 3;
+}
+
+// ModuleCtxType specifies the module context for content retrieval.
+enum ModuleCtxType {
+  MODULE_CTX_SELF = 0;
+  MODULE_CTX_ROOT = 1;
+  MODULE_CTX_ALL = 2;
+}
+
+// ExpandMode specifies how dynamic blocks are handled.
+enum ExpandMode {
+  EXPAND_MODE_NONE = 0;
+  EXPAND_MODE_EXPAND = 1;
+}

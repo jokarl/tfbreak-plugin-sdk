@@ -2,7 +2,7 @@
 //
 // Plugins use this package to register their RuleSet with tfbreak-core.
 // The Serve function is called from main() and handles all communication
-// with the tfbreak host process.
+// with the tfbreak host process using gRPC via HashiCorp's go-plugin library.
 //
 // Example plugin main.go:
 //
@@ -26,7 +26,14 @@
 //	}
 package plugin
 
-import "github.com/jokarl/tfbreak-plugin-sdk/tflint"
+import (
+	"os"
+
+	"github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/go-plugin"
+
+	"github.com/jokarl/tfbreak-plugin-sdk/tflint"
+)
 
 // ServeOpts contains options for serving the plugin.
 type ServeOpts struct {
@@ -40,15 +47,13 @@ type ServeOpts struct {
 // with the tfbreak host process. It should be called from the plugin's
 // main() function.
 //
-// Current implementation (v0.1.0):
-// This is a stub implementation that allows plugins to be built as
-// standalone binaries. The plugin will compile and can be executed,
-// but actual host communication is not yet implemented.
+// The function blocks until the host disconnects. When invoked directly
+// (outside of tfbreak), the plugin will print a message and exit.
 //
-// Future implementation:
-// Will use HashiCorp's go-plugin library with gRPC for communication
-// between tfbreak-core and plugins. The API (ServeOpts, Serve) will
-// remain stable.
+// Communication uses gRPC with HashiCorp's go-plugin library, which provides:
+// - Magic cookie handshake to prevent direct execution
+// - Protocol versioning for compatibility
+// - Bidirectional gRPC for Runner callbacks
 //
 // Example:
 //
@@ -63,19 +68,51 @@ func Serve(opts *ServeOpts) {
 		return
 	}
 
-	// TODO(gRPC): Implement actual plugin serving with go-plugin.
-	//
-	// Future implementation will:
-	// 1. Set up gRPC server with RuleSet service
-	// 2. Configure handshake with tfbreak-core
-	// 3. Block until host disconnects
-	//
-	// For now, this stub allows plugins to be built and the main()
-	// function to complete. When invoked directly (not via tfbreak),
-	// the plugin simply exits.
-
 	// Validate the RuleSet is usable (fail fast on misconfiguration)
 	_ = opts.RuleSet.RuleSetName()
 	_ = opts.RuleSet.RuleSetVersion()
 	_ = opts.RuleSet.RuleNames()
+
+	// Check if we're being invoked by tfbreak (via magic cookie)
+	// If not, print a helpful message and exit
+	if os.Getenv(MagicCookieKey) != MagicCookieValue {
+		printDirectInvocationMessage(opts.RuleSet)
+		return
+	}
+
+	// Create a logger for the plugin
+	logger := hclog.New(&hclog.LoggerOptions{
+		Name:   "plugin",
+		Level:  hclog.Warn,
+		Output: os.Stderr,
+	})
+
+	// Create the plugin map with our implementation
+	pluginMap := map[string]plugin.Plugin{
+		PluginName: &RuleSetPlugin{Impl: opts.RuleSet},
+	}
+
+	// Serve the plugin
+	plugin.Serve(&plugin.ServeConfig{
+		HandshakeConfig: Handshake,
+		Plugins:         pluginMap,
+		GRPCServer:      plugin.DefaultGRPCServer,
+		Logger:          logger,
+	})
+}
+
+// printDirectInvocationMessage prints a helpful message when the plugin
+// is invoked directly instead of via tfbreak.
+func printDirectInvocationMessage(rs tflint.RuleSet) {
+	// Use simple printf since we don't want to pull in extra dependencies
+	os.Stderr.WriteString("This is a tfbreak plugin.\n\n")
+	os.Stderr.WriteString("Plugin: " + rs.RuleSetName() + "\n")
+	os.Stderr.WriteString("Version: " + rs.RuleSetVersion() + "\n")
+	os.Stderr.WriteString("Rules:\n")
+	for _, name := range rs.RuleNames() {
+		os.Stderr.WriteString("  - " + name + "\n")
+	}
+	os.Stderr.WriteString("\nTo use this plugin, run it via tfbreak:\n")
+	os.Stderr.WriteString("  tfbreak [options]\n\n")
+	os.Stderr.WriteString("For more information, see: https://github.com/jokarl/tfbreak\n")
 }
