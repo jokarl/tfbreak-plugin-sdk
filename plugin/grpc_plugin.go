@@ -7,6 +7,8 @@ package plugin
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
@@ -15,6 +17,13 @@ import (
 	pb "github.com/jokarl/tfbreak-plugin-sdk/plugin/proto"
 	"github.com/jokarl/tfbreak-plugin-sdk/tflint"
 )
+
+// Default timeout for gRPC calls.
+// This can be overridden per-call using context.WithTimeout.
+const defaultGRPCTimeout = 30 * time.Second
+
+// checkTimeout is the timeout for the Check method, which may take longer.
+const checkTimeout = 5 * time.Minute
 
 // Ensure RuleSetPlugin implements plugin.GRPCPlugin.
 var _ plugin.GRPCPlugin = (*RuleSetPlugin)(nil)
@@ -168,8 +177,12 @@ type GRPCRuleSetClient struct {
 
 // RuleSetName returns the name of the ruleset.
 func (c *GRPCRuleSetClient) RuleSetName() string {
-	resp, err := c.client.GetRuleSetName(context.Background(), &pb.GetRuleSetName_Request{})
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+
+	resp, err := c.client.GetRuleSetName(ctx, &pb.GetRuleSetName_Request{})
 	if err != nil {
+		// Return empty string on error - caller should handle missing name
 		return ""
 	}
 	return resp.GetName()
@@ -177,8 +190,12 @@ func (c *GRPCRuleSetClient) RuleSetName() string {
 
 // RuleSetVersion returns the version of the ruleset.
 func (c *GRPCRuleSetClient) RuleSetVersion() string {
-	resp, err := c.client.GetRuleSetVersion(context.Background(), &pb.GetRuleSetVersion_Request{})
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+
+	resp, err := c.client.GetRuleSetVersion(ctx, &pb.GetRuleSetVersion_Request{})
 	if err != nil {
+		// Return empty string on error - caller should handle missing version
 		return ""
 	}
 	return resp.GetVersion()
@@ -186,8 +203,12 @@ func (c *GRPCRuleSetClient) RuleSetVersion() string {
 
 // RuleNames returns the names of all rules in this ruleset.
 func (c *GRPCRuleSetClient) RuleNames() []string {
-	resp, err := c.client.GetRuleNames(context.Background(), &pb.GetRuleNames_Request{})
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+
+	resp, err := c.client.GetRuleNames(ctx, &pb.GetRuleNames_Request{})
 	if err != nil {
+		// Return nil on error - caller should handle missing rules
 		return nil
 	}
 	return resp.GetNames()
@@ -195,8 +216,12 @@ func (c *GRPCRuleSetClient) RuleNames() []string {
 
 // VersionConstraint returns the tfbreak version constraint.
 func (c *GRPCRuleSetClient) VersionConstraint() string {
-	resp, err := c.client.GetVersionConstraint(context.Background(), &pb.GetVersionConstraint_Request{})
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+
+	resp, err := c.client.GetVersionConstraint(ctx, &pb.GetVersionConstraint_Request{})
 	if err != nil {
+		// Return empty string on error - no constraint means any version
 		return ""
 	}
 	return resp.GetConstraint()
@@ -204,8 +229,12 @@ func (c *GRPCRuleSetClient) VersionConstraint() string {
 
 // ConfigSchema returns the schema for plugin-specific configuration.
 func (c *GRPCRuleSetClient) ConfigSchema() *hclext.BodySchema {
-	resp, err := c.client.GetConfigSchema(context.Background(), &pb.GetConfigSchema_Request{})
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+
+	resp, err := c.client.GetConfigSchema(ctx, &pb.GetConfigSchema_Request{})
 	if err != nil {
+		// Return nil on error - no schema means no plugin config
 		return nil
 	}
 	return fromProtoBodySchema(resp.GetSchema())
@@ -213,7 +242,10 @@ func (c *GRPCRuleSetClient) ConfigSchema() *hclext.BodySchema {
 
 // ApplyGlobalConfig applies global tfbreak configuration.
 func (c *GRPCRuleSetClient) ApplyGlobalConfig(config *tflint.Config) error {
-	_, err := c.client.ApplyGlobalConfig(context.Background(), &pb.ApplyGlobalConfig_Request{
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+
+	_, err := c.client.ApplyGlobalConfig(ctx, &pb.ApplyGlobalConfig_Request{
 		Config: toProtoConfig(config),
 	})
 	return err
@@ -221,7 +253,10 @@ func (c *GRPCRuleSetClient) ApplyGlobalConfig(config *tflint.Config) error {
 
 // ApplyConfig applies plugin-specific configuration.
 func (c *GRPCRuleSetClient) ApplyConfig(content *hclext.BodyContent) error {
-	_, err := c.client.ApplyConfig(context.Background(), &pb.ApplyConfig_Request{
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGRPCTimeout)
+	defer cancel()
+
+	_, err := c.client.ApplyConfig(ctx, &pb.ApplyConfig_Request{
 		Content: toProtoBodyContent(content),
 	})
 	return err
@@ -245,17 +280,39 @@ func (c *GRPCRuleSetClient) Check(runner tflint.Runner) error {
 	// Start a Runner server that the plugin can call back to
 	runnerServer := &GRPCRunnerServer{impl: runner}
 
+	// Use a WaitGroup to ensure the server is ready before calling Check
+	var serverReady sync.WaitGroup
+	serverReady.Add(1)
+
 	// Use the broker to start a server the plugin can connect to
 	serverFunc := func(opts []grpc.ServerOption) *grpc.Server {
 		s := grpc.NewServer(opts...)
 		pb.RegisterRunnerServer(s, runnerServer)
+		serverReady.Done()
 		return s
 	}
 
 	// Start the server in a goroutine since AcceptAndServe blocks
 	go c.broker.AcceptAndServe(RunnerBrokerID, serverFunc)
 
-	// Call the plugin's Check method
-	_, err := c.client.Check(context.Background(), &pb.Check_Request{})
+	// Wait for the server to be ready (with a reasonable timeout)
+	serverReadyChan := make(chan struct{})
+	go func() {
+		serverReady.Wait()
+		close(serverReadyChan)
+	}()
+
+	select {
+	case <-serverReadyChan:
+		// Server is ready
+	case <-time.After(5 * time.Second):
+		// Server startup timeout - proceed anyway, plugin may still connect
+	}
+
+	// Call the plugin's Check method with a timeout
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+
+	_, err := c.client.Check(ctx, &pb.Check_Request{})
 	return err
 }

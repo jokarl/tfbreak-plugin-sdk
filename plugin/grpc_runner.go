@@ -9,6 +9,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 
@@ -16,6 +17,10 @@ import (
 	pb "github.com/jokarl/tfbreak-plugin-sdk/plugin/proto"
 	"github.com/jokarl/tfbreak-plugin-sdk/tflint"
 )
+
+// runnerCallTimeout is the timeout for individual runner callback calls.
+// These should be fast since they're just data retrieval from the host.
+const runnerCallTimeout = 30 * time.Second
 
 // =============================================================================
 // GRPCRunnerClient - Plugin side (calls back to host)
@@ -32,7 +37,10 @@ var _ tflint.Runner = (*GRPCRunnerClient)(nil)
 
 // GetOldModuleContent retrieves module content from the OLD (baseline) configuration.
 func (r *GRPCRunnerClient) GetOldModuleContent(schema *hclext.BodySchema, opts *tflint.GetModuleContentOption) (*hclext.BodyContent, error) {
-	resp, err := r.client.GetOldModuleContent(context.Background(), &pb.GetModuleContent_Request{
+	ctx, cancel := context.WithTimeout(context.Background(), runnerCallTimeout)
+	defer cancel()
+
+	resp, err := r.client.GetOldModuleContent(ctx, &pb.GetModuleContent_Request{
 		Schema: toProtoBodySchema(schema),
 		Option: toProtoGetModuleContentOption(opts),
 	})
@@ -44,7 +52,10 @@ func (r *GRPCRunnerClient) GetOldModuleContent(schema *hclext.BodySchema, opts *
 
 // GetNewModuleContent retrieves module content from the NEW configuration.
 func (r *GRPCRunnerClient) GetNewModuleContent(schema *hclext.BodySchema, opts *tflint.GetModuleContentOption) (*hclext.BodyContent, error) {
-	resp, err := r.client.GetNewModuleContent(context.Background(), &pb.GetModuleContent_Request{
+	ctx, cancel := context.WithTimeout(context.Background(), runnerCallTimeout)
+	defer cancel()
+
+	resp, err := r.client.GetNewModuleContent(ctx, &pb.GetModuleContent_Request{
 		Schema: toProtoBodySchema(schema),
 		Option: toProtoGetModuleContentOption(opts),
 	})
@@ -56,7 +67,10 @@ func (r *GRPCRunnerClient) GetNewModuleContent(schema *hclext.BodySchema, opts *
 
 // GetOldResourceContent retrieves resources of a specific type from the OLD configuration.
 func (r *GRPCRunnerClient) GetOldResourceContent(resourceType string, schema *hclext.BodySchema, opts *tflint.GetModuleContentOption) (*hclext.BodyContent, error) {
-	resp, err := r.client.GetOldResourceContent(context.Background(), &pb.GetResourceContent_Request{
+	ctx, cancel := context.WithTimeout(context.Background(), runnerCallTimeout)
+	defer cancel()
+
+	resp, err := r.client.GetOldResourceContent(ctx, &pb.GetResourceContent_Request{
 		ResourceType: resourceType,
 		Schema:       toProtoBodySchema(schema),
 		Option:       toProtoGetModuleContentOption(opts),
@@ -69,7 +83,10 @@ func (r *GRPCRunnerClient) GetOldResourceContent(resourceType string, schema *hc
 
 // GetNewResourceContent retrieves resources of a specific type from the NEW configuration.
 func (r *GRPCRunnerClient) GetNewResourceContent(resourceType string, schema *hclext.BodySchema, opts *tflint.GetModuleContentOption) (*hclext.BodyContent, error) {
-	resp, err := r.client.GetNewResourceContent(context.Background(), &pb.GetResourceContent_Request{
+	ctx, cancel := context.WithTimeout(context.Background(), runnerCallTimeout)
+	defer cancel()
+
+	resp, err := r.client.GetNewResourceContent(ctx, &pb.GetResourceContent_Request{
 		ResourceType: resourceType,
 		Schema:       toProtoBodySchema(schema),
 		Option:       toProtoGetModuleContentOption(opts),
@@ -82,7 +99,10 @@ func (r *GRPCRunnerClient) GetNewResourceContent(resourceType string, schema *hc
 
 // EmitIssue reports a finding from the rule.
 func (r *GRPCRunnerClient) EmitIssue(rule tflint.Rule, message string, issueRange hcl.Range) error {
-	_, err := r.client.EmitIssue(context.Background(), &pb.EmitIssue_Request{
+	ctx, cancel := context.WithTimeout(context.Background(), runnerCallTimeout)
+	defer cancel()
+
+	_, err := r.client.EmitIssue(ctx, &pb.EmitIssue_Request{
 		Rule:    toProtoRule(rule),
 		Message: message,
 		Range:   toProtoRange(issueRange),
@@ -92,7 +112,10 @@ func (r *GRPCRunnerClient) EmitIssue(rule tflint.Rule, message string, issueRang
 
 // DecodeRuleConfig retrieves and decodes the rule's configuration.
 func (r *GRPCRunnerClient) DecodeRuleConfig(ruleName string, target any) error {
-	resp, err := r.client.DecodeRuleConfig(context.Background(), &pb.DecodeRuleConfig_Request{
+	ctx, cancel := context.WithTimeout(context.Background(), runnerCallTimeout)
+	defer cancel()
+
+	resp, err := r.client.DecodeRuleConfig(ctx, &pb.DecodeRuleConfig_Request{
 		RuleName: ruleName,
 	})
 	if err != nil {
