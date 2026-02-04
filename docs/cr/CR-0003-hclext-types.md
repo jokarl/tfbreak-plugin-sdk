@@ -145,6 +145,7 @@ package hclext
 
 import (
     "github.com/hashicorp/hcl/v2"
+    "github.com/zclconf/go-cty/cty"
 )
 
 // SchemaMode specifies how schema matching behaves.
@@ -199,7 +200,12 @@ type Attribute struct {
     // Name is the attribute name.
     Name string
     // Expr is the attribute's value expression.
+    // This may be nil when received over gRPC; use Value instead.
     Expr hcl.Expression
+    // Value is the pre-evaluated attribute value.
+    // This is populated when the attribute is received over gRPC
+    // (since hcl.Expression cannot be serialized).
+    Value cty.Value
     // Range is the source range of the entire attribute.
     Range hcl.Range
     // NameRange is the source range of just the attribute name.
