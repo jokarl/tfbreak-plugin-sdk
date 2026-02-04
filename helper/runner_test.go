@@ -297,3 +297,137 @@ func TestRunner_ImplementsInterface(t *testing.T) {
 	// Verify Runner satisfies tflint.Runner
 	var _ tflint.Runner = runner
 }
+
+func TestRunner_GetResourceContent_DeeplyNested(t *testing.T) {
+	// Test three levels of nesting: resource > blob_properties > cors_rule
+	runner := TestRunner(t,
+		map[string]string{
+			"main.tf": `
+resource "azurerm_storage_account" "example" {
+  name = "storageacct"
+
+  blob_properties {
+    versioning_enabled = true
+
+    cors_rule {
+      allowed_methods = ["GET", "POST"]
+      allowed_origins = ["*"]
+    }
+  }
+}`,
+		},
+		map[string]string{},
+	)
+
+	// Three-level nested schema
+	schema := &hclext.BodySchema{
+		Attributes: []hclext.AttributeSchema{
+			{Name: "name"},
+		},
+		Blocks: []hclext.BlockSchema{
+			{
+				Type: "blob_properties",
+				Body: &hclext.BodySchema{
+					Attributes: []hclext.AttributeSchema{
+						{Name: "versioning_enabled"},
+					},
+					Blocks: []hclext.BlockSchema{
+						{
+							Type: "cors_rule",
+							Body: &hclext.BodySchema{
+								Attributes: []hclext.AttributeSchema{
+									{Name: "allowed_methods"},
+									{Name: "allowed_origins"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	content, err := runner.GetOldResourceContent("azurerm_storage_account", schema, nil)
+	if err != nil {
+		t.Fatalf("GetOldResourceContent() error = %v", err)
+	}
+
+	if len(content.Blocks) != 1 {
+		t.Fatalf("got %d resource blocks, want 1", len(content.Blocks))
+	}
+
+	resourceBlock := content.Blocks[0]
+	if resourceBlock.Body == nil {
+		t.Fatal("resource block body is nil")
+	}
+
+	// Find blob_properties
+	var blobProps *hclext.Block
+	for _, b := range resourceBlock.Body.Blocks {
+		if b.Type == "blob_properties" {
+			blobProps = b
+			break
+		}
+	}
+	if blobProps == nil {
+		t.Fatal("blob_properties block not found")
+	}
+	if blobProps.Body == nil {
+		t.Fatal("blob_properties body is nil")
+	}
+
+	// Verify versioning_enabled attribute
+	if blobProps.Body.Attributes["versioning_enabled"] == nil {
+		t.Error("versioning_enabled attribute not found in blob_properties")
+	}
+
+	// Find cors_rule (third level)
+	var corsRule *hclext.Block
+	for _, b := range blobProps.Body.Blocks {
+		if b.Type == "cors_rule" {
+			corsRule = b
+			break
+		}
+	}
+	if corsRule == nil {
+		t.Fatal("cors_rule block not found (third level)")
+	}
+	if corsRule.Body == nil {
+		t.Fatal("cors_rule body is nil")
+	}
+
+	// Verify deeply nested attributes
+	if corsRule.Body.Attributes["allowed_methods"] == nil {
+		t.Error("allowed_methods attribute not found in cors_rule")
+	}
+	if corsRule.Body.Attributes["allowed_origins"] == nil {
+		t.Error("allowed_origins attribute not found in cors_rule")
+	}
+}
+
+func TestLabelsMatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		a        []string
+		b        []string
+		expected bool
+	}{
+		{"both empty", []string{}, []string{}, true},
+		{"both nil", nil, nil, true},
+		{"same single", []string{"foo"}, []string{"foo"}, true},
+		{"same multiple", []string{"foo", "bar"}, []string{"foo", "bar"}, true},
+		{"different length", []string{"foo"}, []string{"foo", "bar"}, false},
+		{"different values", []string{"foo"}, []string{"bar"}, false},
+		{"one nil one empty", nil, []string{}, true},
+		{"different order", []string{"foo", "bar"}, []string{"bar", "foo"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := labelsMatch(tt.a, tt.b)
+			if result != tt.expected {
+				t.Errorf("labelsMatch(%v, %v) = %v, want %v", tt.a, tt.b, result, tt.expected)
+			}
+		})
+	}
+}

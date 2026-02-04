@@ -451,7 +451,7 @@ func (r *MyRule) Check(runner tflint.Runner) error {
                 for _, oldNested := range oldBlock.Body.Blocks {
                     if oldNested.Type == "blob_properties" {
                         // Compare versioning_enabled
-                        if err := compareAttr(runner, r, "versioning_enabled", oldNested, newNested); err != nil {
+                        if err := compareStringAttr(runner, r, "versioning_enabled", oldNested, newNested); err != nil {
                             return err
                         }
                     }
