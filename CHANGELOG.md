@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/jokarl/tfbreak-plugin-sdk/compare/v0.2.1...v0.3.0) (2026-02-04)
+
+
+### Features
+
+* add gRPC plugin infrastructure ([#7](https://github.com/jokarl/tfbreak-plugin-sdk/issues/7)) ([89e833e](https://github.com/jokarl/tfbreak-plugin-sdk/commit/89e833ecd2a66c3cc953382c5521f6a77173cb23))
+
 ## [0.2.1](https://github.com/jokarl/tfbreak-plugin-sdk/compare/v0.2.0...v0.2.1) (2026-01-30)
 
 
