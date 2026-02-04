@@ -444,6 +444,15 @@ func TestSeverityConversion_UnknownSeverity(t *testing.T) {
 	}
 }
 
+func TestToProtoSeverity_UnknownSeverity(t *testing.T) {
+	// Test unknown tflint severity converts to UNSPECIFIED
+	unknownSeverity := tflint.Severity(99) // Invalid severity value
+	result := toProtoSeverity(unknownSeverity)
+	if result != pb.Severity_SEVERITY_UNSPECIFIED {
+		t.Errorf("Unknown severity should convert to SEVERITY_UNSPECIFIED, got %v", result)
+	}
+}
+
 func TestToProtoConfig_EmptyRules(t *testing.T) {
 	config := &tflint.Config{
 		Rules: map[string]*tflint.RuleConfig{},
